@@ -9,6 +9,7 @@ public class Context {
     public ApplicationInfo getApplicationInfo() { return null; }
     public String getPackageName() { return null; }
     public java.io.File getFilesDir() { return null; }
+    public java.io.File getExternalFilesDir(String type) { return null; }
     public java.io.File getDataDir() { return null; }
     public PackageManager getPackageManager() { return null; }
     public Context getApplicationContext() { return null; }

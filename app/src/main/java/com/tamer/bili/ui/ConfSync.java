@@ -58,10 +58,14 @@ final class ConfSync {
                     || BiliConfig.KEY_HDR.equals(key) || BiliConfig.KEY_IP_SCOPE.equals(key)
                     || BiliConfig.KEY_ACCEL_CONCURRENCY.equals(key)
                     || BiliConfig.KEY_ACCEL_CACHE_MB.equals(key)
-                    || BiliConfig.KEY_ACCEL_MODE.equals(key)) {
+                    || BiliConfig.KEY_ACCEL_MODE.equals(key)
+                    // 倍速以整数百分比落盘（150=1.5x）：浮点进不了严格解析，见 PITFALLS §38。
+                    || BiliConfig.KEY_SPEED_PCT.equals(key)) {
                 kv.put(key, sp(c).getInt(key, BiliConfig.defaultIntOf(key)));
             } else if (BiliConfig.KEY_FEED_BLOCK_TNAMES.equals(key)
-                    || BiliConfig.KEY_ACCEL_CUSTOM_HOSTS.equals(key)) {
+                    || BiliConfig.KEY_ACCEL_CUSTOM_HOSTS.equals(key)
+                    // 自定义倍速档位表也是单行字符串（逗号分隔）；空串 = 不接管。
+                    || BiliConfig.KEY_SPEED_LIST.equals(key)) {
                 kv.put(key, sp(c).getString(key, ""));
             } else {
                 kv.put(key, sp(c).getBoolean(key, BiliConfig.defaultValueOf(key)));

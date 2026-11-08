@@ -31,6 +31,12 @@ public final class BiliConfig {
      * 不影响宿主行为，故不设自定义权限（权限要求会把这条通道变成又一次跨应用查询）。
      */
     public static final String ACTION_CONF_ACK = "com.tamer.bili.CONF_ACK";
+    /**
+     * 日志导出请求（模块设置页 → 宿主进程）。宿主收到后把内存日志环回一条
+     * {@code ACTION_LOG_DUMP} 广播给模块（显式 setPackage，见 MainHook#installLogDumpReceiver）。
+     * 只含模块自己的日志行，不含账号/cookie/播放地址。
+     */
+    public static final String ACTION_LOG_DUMP = "com.tamer.bili.LOG_DUMP";
     /** 实际生效的配置来源（日志排查用） */
     public static volatile String sConfSource = "defaults";
     /** 当前生效配置的代次（文件通道与 Intent 通道共用这一把尺子）。 */
@@ -117,6 +123,41 @@ public final class BiliConfig {
      *  三格对照装机已证（同一条稿件，改身份才下发；荣耀 2026-10-28，细节见 {@link com.tamer.bili.hooks.ViewCmAdHooks} 类头）。 */
     public static final String KEY_PLAYER_NO_UNDER_AD = "player_no_under_ad";
 
+    // ===== 播放器默认倍速（biliSpeed 的 B 站段移植）=====
+    /** 默认倍速开关。出厂默认关：它会在每次起播时改动播放速度，属于用户可感知的行为改变。 */
+    public static final String KEY_SPEED_ENABLED = "playback_speed_enabled";
+    /**
+     * 默认倍速，以**整数百分比**存储（150 = 1.5x）。
+     *
+     * 为什么不能直接存浮点：conf 的严格解析只认 boolean/int/字符串三类
+     * （{@link #parseConfText}，PITFALLS §38），一行 `playback_speed=1.5` 会被当成未知键丢掉，
+     * 而且是**整份副本**当作没有——表现是「设置页存了、宿主却跑在默认值上」。
+     * 存 int 百分比既落在解析器认的类型里，也对 float 的二进制表示不敏感（1.5f 落成 150 而不是 1.4999）。
+     *
+     * 区间分两层，别把两层混成一层：
+     *  - **写入侧 25..300**：设置页的输入校验与 {@link #defaultIntOf} 都按这个来，
+     *    因为行为区间就是 0.25..3.0，写进去的值本来也只可能落在那里。
+     *  - **读取侧 25..400**：只为兼容手写 conf / 旧副本。超范围不报错、不迁移，
+     *    由 {@link com.tamer.bili.hooks.SpeedPolicy#fromPct(int)} 夹到 3.0f ——
+     *    但**会打一条 warn**（见 MainHook#getPlaybackSpeedPct），否则「我写了 3.5 怎么只有 3.0」
+     *    在真机日志里查不到任何痕迹。
+     * 为什么写入侧收紧到 300 而不是给 400 留余量：3.5x 存进去、读出来变 3.0x，数据/界面/行为
+     * 三处对不上且不报错，比「将来放宽要改常量」贵得多。
+     */
+    public static final String KEY_SPEED_PCT = "playback_speed_pct";
+    /**
+     * 自定义倍速档位表（逗号分隔的单行字符串，如 {@code 0.5,0.75,1.0,1.25,1.5,1.75,2.0,2.5,3.0}）。
+     *
+     * 空串 = 不接管（用 B 站自带档位，零干预）。非空 = <b>替换</b>播放器倍速菜单里的整张表
+     * （降序、去重、夹到 0.25..3.0、最多 12 档），规则全部在
+     * {@link com.tamer.bili.hooks.SpeedListPolicy} 里，这里只负责存取。
+     *
+     * 为什么用字符串而不是 int 数组：conf 解析器只认 boolean/int/单行字符串三类
+     * （PITFALLS §38），列表只能用字符串；这也是既有词表键（{@code feed_blocked_tnames}、
+     * {@code accel_custom_hosts}）已经在用的形态，读侧写侧都不用新增类型。
+     */
+    public static final String KEY_SPEED_LIST = "playback_speed_list";
+
     // ===== 调试 =====
     public static final String KEY_DEBUG_ALIVE = "debug_alive_marker";
     public static final String KEY_VERBOSE = "verbose_log";
@@ -151,6 +192,9 @@ public final class BiliConfig {
         KEY_FEED_NO_LARGE_CARD,
         KEY_PLAYER_NO_ACTIVITY_META,
         KEY_PLAYER_NO_UNDER_AD,
+        KEY_SPEED_ENABLED,
+        KEY_SPEED_PCT,
+        KEY_SPEED_LIST,
         KEY_LISTEN_PAUSE_AFTER_END,
         KEY_HIDE_TRIPLE,
         KEY_HIDE_VOTE,
@@ -183,6 +227,7 @@ public final class BiliConfig {
         if (KEY_FEED_NO_LARGE_CARD.equals(key)) return false;
         if (KEY_PLAYER_NO_ACTIVITY_META.equals(key)) return false;
         if (KEY_PLAYER_NO_UNDER_AD.equals(key)) return true;
+        if (KEY_SPEED_ENABLED.equals(key)) return false;   // 改动播放速度，出厂默认关
         if (KEY_DEBUG_ALIVE.equals(key)) return false;
         if (KEY_VERBOSE.equals(key)) return false;
         if (KEY_PROBE.equals(key)) return false;
@@ -201,6 +246,7 @@ public final class BiliConfig {
         if (KEY_IP_SCOPE.equals(key)) return IP_SCOPE_COMMENT; // v1.3 起默认评论区限定
         if (KEY_ACCEL_CONCURRENCY.equals(key)) return 8;
         if (KEY_ACCEL_CACHE_MB.equals(key)) return 2048;
+        if (KEY_SPEED_PCT.equals(key)) return 150;  // 1.5x，与 biliSpeed 的出厂值一致
         return 0;
     }
 
@@ -388,9 +434,11 @@ public final class BiliConfig {
                 if (KEY_CODEC.equals(k) || KEY_AUDIO_QUALITY.equals(k)
                         || KEY_HDR.equals(k) || KEY_IP_SCOPE.equals(k)
                         || KEY_ACCEL_CONCURRENCY.equals(k) || KEY_ACCEL_CACHE_MB.equals(k)
-                        || KEY_ACCEL_MODE.equals(k)) {
+                        || KEY_ACCEL_MODE.equals(k) || KEY_SPEED_PCT.equals(k)) {
                     try { m.put(k, Integer.valueOf(v)); } catch (Throwable ignored2) {}
-                } else if (KEY_FEED_BLOCK_TNAMES.equals(k) || KEY_ACCEL_CUSTOM_HOSTS.equals(k)) {
+                } else if (KEY_FEED_BLOCK_TNAMES.equals(k) || KEY_ACCEL_CUSTOM_HOSTS.equals(k)
+                        || KEY_SPEED_LIST.equals(k)) {
+                    // 字符串键：空值也是有效值（= 不启用/不接管），所以原样收下，不做「空即缺省」
                     m.put(k, v);
                 } else if ("true".equals(v) || "false".equals(v)) {
                     m.put(k, Boolean.valueOf("true".equals(v)));

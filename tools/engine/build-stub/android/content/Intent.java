@@ -13,6 +13,8 @@ public class Intent {
     public static final int FLAG_ACTIVITY_NEW_TASK = 0x10000000;
     public static final int FLAG_ACTIVITY_CLEAR_TOP = 0x04000000;
     public static final int FLAG_ACTIVITY_SINGLE_TOP = 0x20000000;
+    /** 与 AOSP Intent 常量一致（广播也能打到被冻结/已停止的包）。 */
+    public static final int FLAG_INCLUDE_STOPPED_PACKAGES = 0x00000020;
 
     public Intent() { }
     public Intent(Context packageContext, Class<?> cls) { }

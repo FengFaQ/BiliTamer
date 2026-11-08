@@ -102,12 +102,13 @@ jadx 显示的调用点方法名可能不在 dex 的 method_ids 里。遍历目�
 QQ 的分享中转页，降级路径只开主界面。
 QQ 互联对重签名包返回 25201，服务端收紧后该功能整体删除（v1.7.10）。
 
-## 14. 倍速菜单上限（功能已撤回，技术存档）
+## 14. 倍速下发链（6.7.1 已重新实证，见 §60）
 
-菜单由 `x.a(MediaResource, Integer, boolean, int)` 返回硬编码档位（2.0/1.5/1.25/1.0/0.75/0.5），
-3.0 仅实验组且要求 fps<50。下发链：`D.setPlaySpeed` → pref `player_key_video_speed` →
-`Ops.OpSwitchSpeed` → `IjkMediaPlayer.setSpeed` → native，Java 层无钳制；2.0 会被 app 降为
-1.99 下发。菜单 hook AFTER 注入档位，内核 hook `setSpeed` 放行即可。
+老版本这里是「菜单 档位硬编码 + 2.0 被降成 1.99 下发」。**6.7.1 复核结论**：链路形状没变
+（`setPlaySpeed` → pref `player_key_video_speed` → `Ops.OpSwitchSpeed` →
+`IjkMediaPlayer.setSpeed` → native），但**类名全换了**（`eK1.q` / `HL1.r` / `JL1.d`），
+且「2.0 降成 1.99」这条依然成立、位置在 `setPlaySpeed` 内部（参数 `== 2.0f` 时替换为 1.99f）。
+本仓库当前**不**做菜单档位注入，只做「默认倍速」；改倍速请走 §60 的落点，不要照本节老写法。
 
 ## 15. native 有 3.0x 硬钳制（功能已撤回，技术存档）
 
@@ -679,3 +680,224 @@ R8 会把 trivial getter 内联成字段访问，调用图上没有那个点，�
   本地 `_player_main` 表读出 20:32 那次实际打开的是 aid=117500440218112（另一条稿件），
   于是「解锁失败」的假象是深链给的。锁区正样本的验收路径只有历史页按标题点开那一条（§55）。
 
+## 60. 移植别的模块的「默认倍速」：先反编译宿主编译，别照抄别人试出来的链
+
+**v1.10.0 首版整条链都是错的，教训写在最前面**：直接照搬 biliSpeed 的锚点
+（`AbstractMediaPlayer#notifyOnInfo` → `mOnPreparedListener` 持有链 → `resume()`），
+真机上「开关有了、视频仍是一倍速」。反编译 6.7.1（versionCode 9161100）后看到三个**独立**死因：
+
+1. **本版没有 `resume()`**。`IjkMediaPlayer` 只有 `start()`/`pause()`，原版的起播锚点
+   根本不存在——`findAndHookMethod` 抛异常，整条链静默失败，而日志只留一句「找不到」；
+2. **`notifyOnInfo` 不是起播入口**。它是 `AbstractMediaPlayer` 的通用 info 事件分发
+   （`notifyOnPrepared()` 才是走 `mOnPreparedListener` 的那个），挂在它上面只能碰运气；
+3. **速度真值在上层，改内核等于白改**。`eK1.f#onPrepared` 每次起播都会 `q.R0(false)`
+   从 pref `player_key_video_speed` 重算初值（默认常量 1.0f），再 `setPlaySpeed` 覆盖一遍。
+   内核 `IjkMediaPlayer.setSpeed` 只是这条链的末端。
+
+**判据（可以复用到任何「移植别人模块的功能」的场合）**：与其照着别人的 hook 链去适配，
+不如先把宿主 APK 拆开，**从 UI 文案/日志串反查真实调用链**。这次就是靠
+`"[player] player speed type="`、`player_key_video_speed` 这两个串定位到
+`eK1.q#setPlaySpeed(float)` 的。别人的锚点是别人那个版本上的现场，不是契约。
+
+需求来自 biliSpeed（B 站段）——只搬「每次起播套用默认倍速」这一件事，其余平台段不搬。
+真正的难点不在「怎么设速」，而在三件事：**这条链本身是别人在某个混淆版本上试出来的**、
+**写回会重入自己的钩子**、**「手动值」和「我们设过的值」是两种东西**。
+
+**6.7.1 的实证链路（classes28.dex，jadx 1.5.0 + baksmali 2.5.2）**
+
+```
+eK1.f#onPrepared(IMediaPlayer)      ← 起播（AbstractMediaPlayer.notifyOnPrepared 分发）
+  ├→ eK1.q#R0(boolean)F             初值：false 分支读 pref player_key_video_speed（默认 1.0f）
+  └→ eK1.q#setPlaySpeed(float)V     ← 唯一设置入口
+       ├→ setting/c.M7(float, "player_key_video_speed")   写 pref
+       └→ HL1.r.e(Ops.OpSwitchSpeed, Float)
+            └→ JL1.d#e(...) → IjkMediaPlayer#setSpeed(float) → doAsyncTask(msg16/10003) → native
+```
+
+**落点：改 `setPlaySpeed` 的入参，不改内核。** 原因是那个入参在方法体内被用在**三处**：
+写 pref、经 `OpSwitchSpeed` 下发内核、以及最后那句日志。替换入参 = 三处同时一致；
+hook 返回值只能改一处，下一轮 `R0` 读 pref 时就对不上。附带一个宿主细节：
+`setPlaySpeed` 只在参数 `== 2.0f` 时特殊改成 `1.99f` 下发，所以设 2.0x 时内核收到 1.99。
+
+**抗漂移**：`eK1.q`/`eK1.f`/`JL1.d` 都是 R8 混淆名，每版会变；但 `setPlaySpeed` 是 Kotlin
+真名（接口方法不混淆），所以按「哪个类声明了 `public void setPlaySpeed(float)`」定位，
+类名只作提示（`CANDIDATE_HOLDERS`）。提示未命中时**不猜**：不枚举 ClassLoader（34 个 dex、
+单字母混淆包，libxposed 也不给类表），不挂类加载钩子（播放器核心在启动早期就加载完了）。
+直接 warn 并指出「去新包里找谁声明了 `setPlaySpeed(float)`，把它加进候选表」——可维护路径
+比一个假的自动发现诚实。（v1.10.1 还有一个挂在 `R0(Z)F` 上的「初值兜底」L3 钩子；
+v1.10.2 删掉了：审计确认 6.7.1 的 `R0` 结果无例外都会再经 `setPlaySpeed` 落地，
+L3 只是多一处「可能把用户选档改回去」的改写面，收益为零。）
+
+**语义：只在「起播」这一个事件上改，其余时刻零干预。** 起播 = 调用栈里有 `onPrepared`
+（dex 实证 `eK1.f#onPrepared` 无条件调用 `setPlaySpeed`）；此时把入参换成配置值。
+非起播一律放行——用户手动选档（宿主带着用户的值调 `setPlaySpeed`）因此**天然立即生效**，
+下一次起播又被配置值覆盖，于是**不记忆**。宿主自己复位（缓冲结束、切清晰度）也不抢方向盘。
+
+这条语义是 v1.10.2 定下的，替代了 v1.10.1 的「识别手动调速并跟随」：那一版靠调用栈里有没有
+`PlaySpeedManagerImpl` 判手动，而 6.7.1 dex 证明这个类根本不在两条真实手动链路的栈上，
+于是「跟随」变成了静默拦截（完整教训见 §63）。**「跟随」不需要识别——不拦就是跟随。**
+
+早期还想过用「起播请求值是否等于我们上次设下去的值」自动区分「同片继续 / 换片」，后来在 dex
+里查到 `player_key_video_speed` 属于宿主的**持久化设置键**（`setting/a.e` 清单，跨视频保留），
+换片时并不必然回到 1.0f，该判据会误判；而 `onPrepared` 每次起播都回调（含暂停继续、切清晰度）、
+`eK1.q` 又是长生命周期核心，都不是换片信号。没有可靠信号就别猜：宁可行为朴素可解释。
+
+**没有状态机**：v1.10.1 曾把「手动值 / 宿主复位」抽成 `SpeedSession`（配 19 格顺序单测）。
+v1.10.2 因为语义改成「非起播零干预」，这些状态全部消失，类与用例一并删除——
+留下一个没有生产调用方的状态机，只会让下一版误以为它还在生效（审计 NIT-4 就是这么发现的）。
+
+**配置：倍速一律存整数百分比，且写入侧/读取侧两个区间**
+
+conf 的严格解析只认 boolean/int/字符串（§38），`playback_speed=1.5` 会被当未知键、**整份副本**丢掉，
+表现是「设置页存了、宿主跑在默认值上」。所以存 `playback_speed_pct`（int）。
+区间刻意分两层：**写入侧 25..300**（设置页校验 + 默认值），**读取侧兜底 25..400**（兼容手写/旧 conf）。
+不要为了「给未来留余量」把写入侧也开到 400：3.5x 存进去、读出来被夹成 3.0x 时，
+数据、界面、行为三处对不上且**不报错**，而这种不一致用户只会读成「开关坏了」。
+读取侧超出写入侧时必须留一条 `speed: conf pct=350 out of write range 25..300, clamped to 3.00`。
+
+**设置页落盘用 `commit()`（理由要写对）**
+
+`putInt(...).apply()` 会先同步更新内存里的 `mMap` 再异步入队落盘，同进程随后的 `getInt()`
+一定读到新值——所以「apply 与 persistAll 赛跑读回旧值」这个说法**不成立**（审计 NIT-6 纠正过的
+一处错误注释）。用 `commit()` 的真实理由是：**控件改了值就要立刻整表落盘**，`commit()`
+同步写盘后返回，后面的 `persistAll → ConfSync.saveAll` 读到的 conf 副本一定包含这次修改，
+也避免「保存完进程立刻被杀导致磁盘还是旧值」。别把这条理由写成「apply 有读回竞态」，
+否则下一版会满页乱改 `commit()`。
+
+**验收口径（v1.10.2 起，只有三段，别再按旧的 6 环链找）**：
+`speed: anchor L1 hit hint eK1.q#setPlaySpeed` → `speed: armed on eK1.q#setPlaySpeed(float) (stage=L2)`
+→ `speed: applied 1.50 at start (was 1.00)`。前两条每进程只打一次，`applied` 首条 info、
+之后同值走 debug；非起播调用首次出现时还有一条 debug 写明调用者类名（`pass through non-startup
+call … from <cls>#<method>`），用于在真机上确认「用户选档确实没被拦」。
+只有 armed 没有 applied ⇒ 起播没走到 `setPlaySpeed`（起播路径变了）或配置就是 1.0x。
+纯决策逻辑（clamp / 起播取值 / 百分比换算）不依赖 android，`python3 tools/speedpolicy_test.py`
+一条命令跑完 39 格；改这三条规则前先让那套用例红一次。
+
+## 61. 「让用户自己 go get 日志」是设计缺陷，但日志也不该由宿主进程去写盘
+
+倍速功能第一次交付后，用户在真机上反馈「没用」，而我们能给的只有一句
+「grep logcat 看 `speed:` 行」。用户不会用 adb，**诊断信息够不着用户，
+就等于没有诊断信息**，接下来只能靠来回猜。所以要给一个按钮。
+
+**第一版做错了（值得记下来）**：让**宿主进程**（B 站）里的日志直接由 root 写
+`/sdcard/Download/BiliTamer/`。它引入四个坑，且每一个都是自己造的：
+
+1. `FileLog` 跑在宿主进程里，拿不到 /sdcard 的写句柄，每次写都是一次 `su -c` ——
+   播放线程上每条日志起一个 su 进程，会卡宿主；只能靠批量压频次，于是又要处理崩溃前不落盘；
+2. `su` 在**宿主**进程里执行，意味着用户要给**B 站本身**授权 root，而不是给模块授权。
+   这个错位很反直觉，用户大概率不会做；
+3. `onModuleLoaded` 每个进程都跑，于是 `:web`/`:ijkservice` 各写一份文件，
+   用户根本不知道该发哪一个；
+4. 内容里含中文/引号/`$`，拼进 `su -c` 就要 base64；`chmod` 串在 `&&` 后面会在
+   FUSE 的 /sdcard 上假失败（§58 同型）。
+
+**正确的分工（一句话）：日志在宿主进程里产生，文件在模块进程里写。**
+宿主只把最近 N 行放进**内存环**（`LogRing`，1000 行、加锁、零 IO）；
+用户按设置页的「导出日志到文件」时，模块广播过去，宿主把环里那份回传，
+模块用自己的进程写盘（`LogExport`，写自己的目录 = **零权限、不需要 root**）。
+
+* 传输必须**显式 setPackage(模块包名)**：不指定的话任何应用都能注册同 action 收走日志
+  （里面含设备型号与用户开了哪些开关）；
+* 回传要**截断到 CAP**：1000 行约 79 KB（实测），远低于 Binder 事务上限 1 MB；
+  不截断就会 `TransactionTooLargeException`，而用户看到的又是「点了没反应」；
+* 发广播带 `FLAG_INCLUDE_STOPPED_PACKAGES`：点导出时 B 站很可能刚被冻结/划掉；
+* 落点两档：先试公共 `Download/BiliTamer/`（用户最好找，Android 11+ 常被分区存储拒绝），
+  再退回 `Android/data/com.tamer.bili/files/BiliTamer/`，**并把实际路径显示出来**；
+* 超时要有话说：3 秒没回执就提示「请先打开 B 站播一个视频，再回来点导出」，
+  而不是让用户对着没反应的按钮猜。
+
+**判据**：「导出成功」必须同时给出**行数 + 完整路径**。只报「已保存」等于没说，
+用户下一次会再问一遍「文件在哪」。
+
+## 62. 「更多倍速」的落点是档位表的**出口**，不是 UI 适配器，也不是静态字段
+
+**6.7.1（versionCode 9161100，classes18.dex + classes22.dex）实证链路**
+
+```
+com.bilibili.playerbizcommonv2.utils.B#a(MediaResource, Integer, boolean, int) : ArrayList   ← 档位表出口
+  ├→ 可选 add(new t(3.0f, enabled))        // 3.0 档受 LongPressSpeedExperiment + 「非离线下载」gate
+  └→ 遍历静态字段 B.a : List<Float>         // <clinit>：listOf(2.0f,1.5f,1.25f,1.0f,0.75f,0.5f)
+       每档 add(new t(speed, true))
+```
+
+* 静态字段初始化：`<clinit>` 里 6 个 `const/high16`（0x40000000/0x3FC00000/0x3FA00000/
+  0x3F800000/0x3F400000/0x3F000000）+ `filled-new-array/range` → `kotlin.collections.v.k()`；
+* 元素类 `com.bilibili.playerbizcommonv2.utils.t`：Kotlin data class，字段 `a:F`/`b:Z`，
+  构造器 `(FZ)V`（`toString` 串 "PlaybackSpeedOption(speed="）；
+* **三个调用者**：`playerbizcommonv2.widget.speed.e#onWidgetShow()`（旧 biliplayerv2 的
+  RecyclerView 面板，参数 `(media,null,false,14)`）、`ship.theseus.united.page.speed.
+  TheseusSpeedFunctionWidget#f()`（theseus Compose 面板，`(media,Integer,true,8)`）、
+  `ship.theseus.united.page.speed.e#b(...)`（静态中转，结果进 `MutableState<ArrayList>`）。
+  方法体内每次 `new ArrayList()`，**无缓存**，所以「改完设置重开面板」即刻可见。
+
+**为什么改返回值，不改另外两个看起来更省事的地方**
+
+1. **不改静态字段 `B.a`**：它是 `static final List`。碰 final 字段要赌各版本 ART 的态度；
+   更实际的问题是绕过 `enabled` 语义——3.0 档的 gate（实验组 + 非下载态）本来靠 `B.a`
+   第二个入参和 `B.c(F)Z` 共同决定，直接换表既可能把不该出现的 3.0 塞进去，也拿不到
+   「这一档是否可点」的信息。改返回值是纯后处理，宿主内部状态一个字节都不动。
+2. **不改 UI 适配器/Compose 状态**：旧面板（RecyclerView adapter）和 theseus 面板（Compose
+   `MutableState`）是两套完全不同的消费端，而且都是每版重写的热区；档位表出口只有一处，
+   覆盖两条路径。**一处接缝覆盖两个消费者**比分别改两个消费者稳得多（同 §36 的思路）。
+3. **不改 `setPlaySpeed`**：那个落点已经在 §60 用于「默认倍速」，职责是「起播套用」；
+   菜单档位是另一件事（用户能看见/点选的集合），两件事分开挂、分开失败、分开记日志。
+
+**抗漂移：形状 + 从宿主自己的返回值里取元素类**
+
+* `B`/`t` 都是 R8 混淆名，每版会换。宿主类定位写死候选名只作提示，真正的判据是形状：
+  `static` + 4 参 `(…MediaResource, Integer, boolean, int)` + 返回 `ArrayList` + 同类有静态
+  `List` 字段。形状不符就当没找到（warn 一条并停手），不猜着改别人的列表（§40）。
+* **元素类一次名字都不用写**：宿主方法返回的 `ArrayList` 里第一个元素的 `getClass()` 就是它，
+  再取 `(FZ)V` 构造器。只有返回空表时才退回候选名。
+* 找不到时行为是「零干预 + 一条 warn」：菜单保持宿主原样，不会变成空白。
+
+**语义（设置页文案必须同款写明，否则用户会把设计当 bug）**
+
+* 非空 = **替换**整张表（用户要的是「自定义列表」，不是「追加」）；空 = 不接管；
+* 越界**夹**不丢弃：写 4 会被夹到 3.0（native 的 3.0 硬钳制，§15），设置页保存后**回显**
+  规范化结果——用户当场看得见 4 变成了 3，而不是「存进去了却没效果」；
+* 去重按两位小数（1.5 与 1.50 同一档）；降序排列（与宿主原生菜单同序）；
+* 最多 12 档；默认倍速开着且不在表里时**补进去**（否则起播套用了 1.75x，面板里却没有 1.75，
+  用户想回到默认值都没有入口）；
+* 为什么这些规则全在 `SpeedListPolicy` 而不在 hook 里：每条都是「不崩不报错、只是看起来不对」
+  的错误形态，抽成纯函数才能在纯 JVM 上逐格钉住（`tools/speedlistpolicy_test.py`，34 格）。
+
+**验收口径**：`speedmenu: anchor hit …` → `speedmenu: armed on … (stage=M1)` →
+`speedmenu: applied N entries [..] (host offered M)`。前两条每类只打首条，之后只在档位表
+**变化**时再打 applied；只有 armed 没有 applied ⇒ 配置为空（零干预）或 `rewrite` 抛异常
+被原样放行（debug 行里能看到原因）。**没有真机时只能说静态链路成立**：本版交付时环境里
+`adb devices` 为空，菜单上是否真的多出档位未做 A/B，别把「构建通过 + dex 实证」写成「已验证生效」。
+
+## 63. 用调用栈类名认「用户手动调速」：类名根本不在栈里，承诺就变成静默拦截
+
+v1.10.1 的默认倍速承诺「用户手动调速立即跟随」，实现判据是调用栈里有没有
+`com.bilibili.player.tangram.basic.PlaySpeedManagerImpl`。听上去很合理——它确实是宿主的
+倍速管理器。但 6.7.1（9161100）dex 实证这个类**不会**出现在两条真实手动链路上：
+
+* **旧面板**（classes18.dex）：`playerbizcommonv2.widget.speed.e#f(...)` 打点后**直接**
+  `invoke-interface A.setPlaySpeed(F)`，栈帧是 `…widget.speed.e` / `…speed.e$a`；
+* **Theseus 面板**（classes22.dex）：`TheseusSpeedFunctionWidget$a#b(F)` → `theseus.keel.player.h#t(F)`，
+  而 `h.t(F)` 只做 `iget` 取 `PlaySpeedManagerImpl` 字段、写它的 `StateFlowImpl`，
+  真正的 `setPlaySpeed` 由 flow 收集器 `player.tangram.playercore.k.emit(...)` 回调
+  `PCSFacadeImpl` 触发，栈帧是 `h` / `k` / 协程调度器；
+* `PlaySpeedManagerImpl` 自己的方法只有 `<init>` / `a(F,Continuation)` / `k()`，
+  字节码里**没有任何一条**指令调用 `A.setPlaySpeed`——它只是「速度值」的持有者，不是设速者。
+
+于是「手动」永远判 false，代码把用户的选档当成「宿主自己复位」，改回配置值：
+**UI 显示 2.0x，实际播 1.5x**，而且不报错、不崩溃。单测 61 格全绿——因为用例自己拼了一个
+含该字面类名的假栈，只证明了「字符串精确匹配」这个机械行为（审计 NIT-5）。
+
+**根因不是「类名写错了」，而是「用调用栈猜调用意图」这条路本身不可靠**：R8 会把设速调用
+搬到 flow/协程/collector 里，任何「某个类必须出现在栈上」的假设都要每版重新证一遍，
+而证不出来的时候表现是静默的（不崩不报错）。
+
+**v1.10.2 的修法：不需要识别手动。** 把「非起播」从「改回配置值」改成**原样放行**：
+用户选档时宿主带着用户的值调 `setPlaySpeed`，我们不拦 → 立即生效；下一次起播再套配置值 → 不记忆。
+一句话：**「跟随用户」不是靠识别用户，而是靠不干预。**
+
+**判据（可复用）**：
+1. 改写型钩子要「只在明确的事件上动手」，事件判据用**接口方法名**（`onPrepared`）这类真名，
+   不要用「某个实现类的类名是否在栈上」；
+2. 用调用栈判定**意图**（谁调的）时，必须先在**当前版本 dex** 上证明那个栈帧真的存在；
+   证不出来就设计成「不依赖意图」的语义；
+3. 单测不能自己拼假栈来自我证明——锚点真实性归 dex 实证，单测只钉「输入 → 输出」。

@@ -143,4 +143,35 @@ public interface HookApi {
     /** 干掉详情页广告位：播放器下方商品卡 + 楼层广告 + 简介区「视频提及」的游戏推广卡
      *  （默认开，身份改写引入的回归）。 */
     boolean isPlayerNoUnderAdEnabled();
+
+    // ===== 默认倍速（biliSpeed B 站段移植）=====
+
+    /**
+     * 默认倍速开关（出厂默认关）。
+     * 钩子侧每次都实时读这个值，不要缓存：设置页改完是靠投递热生效的，
+     * 缓存成 install 时的快照会让「改了不生效」重演。
+     */
+    boolean isPlaybackSpeedEnabled();
+
+    /**
+     * 配置里的默认倍速，单位是**整数百分比**（150 = 1.5x）。
+     *
+     * 返回 int 而不是 float 是有意的：conf 只认 boolean/int/字符串（PITFALLS §38），
+     * 这一层的类型就是存储类型，换算统一交给
+     * {@link com.tamer.bili.hooks.SpeedPolicy#fromPct(int)}，
+     * 免得两处各写一遍「除以 100」而各漏一次 clamp。
+     */
+    int getPlaybackSpeedPct();
+
+    // ===== 自定义倍速档位表 =====
+
+    /**
+     * 自定义倍速档位表原文（conf 里的单行字符串，逗号分隔；未配置时返回空串）。
+     *
+     * <b>返回原文而不是解析好的数组</b>：解析/去重/排序/夹取是
+     * {@link com.tamer.bili.hooks.SpeedListPolicy} 的职责，钩子侧每次现解析一遍
+     * （12 档以内，成本可忽略），这样「设置页改完立刻生效」不需要任何缓存失效逻辑。
+     * 空串 = 不接管播放器菜单（零干预）。
+     */
+    String getPlaybackSpeedList();
 }

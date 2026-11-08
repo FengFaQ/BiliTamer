@@ -153,6 +153,16 @@ public class SettingsActivity extends Activity {
                 + "半屏面板、国际版自有广告等一律不动。\n"
                 + "广告按稿件内容下发，不是每条都有；日志会写明「清掉了」或「这批本来就没有」。");
 
+        addSwitch(BiliConfig.KEY_SPEED_ENABLED, "每次起播套用默认倍速", "Default playback speed",
+                "开启后每次起播自动套用下面的倍速。\n"
+                + "在播放器里手动调速会立即生效（模块不拦你的选档），但只在这一段播放内有效：\n"
+                + "下次点播放（包括暂停后继续、切清晰度）会回到这里的默认值。\n"
+                + "想让某个视频一直用别的速度，把默认值改成那个速度即可。\n"
+                + "上限 3.0x 是播放内核的硬限制，超过无效。保存后即时生效（会自动把配置投递给 B 站）。\n"
+                + "仅适配国际版 6.7.1 实测锚点，其它版本可能静默不生效");
+        addSpeedInput(dp);
+        addSpeedListInput(dp);
+
         section("首页", "Home");
         addSwitch(BiliConfig.KEY_NO_AUTO_REFRESH, "首页不自动刷新", "No auto refresh on home",
                 "从后台/其它页面切回首页时不自动重新加载推荐流（省流量、省电）；\n"
@@ -231,6 +241,7 @@ public class SettingsActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         section("调试", "Debug");
+        addLogExportRow(dp);
         addSwitch(BiliConfig.KEY_DEBUG_ALIVE, "写存活标记", "Alive marker",
                 "在 B 站 files 目录写 bili_tamer_alive.txt，便于无 logcat 时确认已加载");
         addSwitch(BiliConfig.KEY_VERBOSE, "详细日志", "Verbose log",
@@ -246,7 +257,8 @@ public class SettingsActivity extends Activity {
         foot.setText("\u26a0 本模块由 AI 生成，请自行评估风险。/ AI-generated; use at your own discretion.\n\n"
                 + "首次使用：1) 在 LSPosed 启用本模块（作用域：哔哩哔哩国际版）；\n"
                 + "2) 强制停止并重开 B 站即以出厂默认生效，无需任何配置或 root。\n"
-                + "定制开关：root 设备会自动同步配置（dev 场景）；本地 conf 含 dev_override=true 时优先生效。");
+                + "定制开关：root 设备会自动同步配置（dev 场景）；本地 conf 含 dev_override=true 时优先生效。\n\n"
+                + "日志：设置页下方「导出日志到文件」，无需 adb。");
         foot.setTextColor(Color.parseColor("#999999"));
         foot.setTextSize(12);
         root.addView(foot);
@@ -378,6 +390,286 @@ public class SettingsActivity extends Activity {
         t2.setTextSize(12);
         t2.setPadding(0, 0, 0, dp * 6);
         root.addView(t2);
+    }
+
+    /**
+     * 默认倍速输入行：一个 EditText（输数字）+ 保存按钮。
+     *
+     * 为什么不是 Slider/SeekBar：宿主的倍速档位是离散的（0.5/0.75/1.0/1.25/1.5/2.0），
+     * 但配置层要能表达任意值（用户可能想 1.75x）。纯代码 UI + 无资源依赖是本页的既有约束，
+     * EditText 是表达「任意小数」最省事且不用引第三方控件的方式。
+     *
+     * 校验口径与写入侧一致（{@link com.tamer.bili.hooks.SpeedPolicy#PCT_WRITE_MIN}..
+     * {@link com.tamer.bili.hooks.SpeedPolicy#PCT_WRITE_MAX}）：非法输入 Toast 提示、不落盘，
+     * 避免「存了一个越界值、读出来被悄悄夹住」的静默失配。
+     */
+    private void addSpeedInput(int dp) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(0, dp * 6, 0, dp * 10);
+
+        TextView lbl = new TextView(this);
+        lbl.setText("倍速");
+        lbl.setTextColor(Color.parseColor("#222222"));
+        lbl.setTextSize(16);
+        row.addView(lbl);
+
+        final android.widget.EditText input = new android.widget.EditText(this);
+        // 数字键盘：宿主默认弹全键盘，输 1.5 要先切一次符号页，属于可见的退化。
+        // TYPE_CLASS_NUMBER | TYPE_NUMBER_FLAG_DECIMAL 正好覆盖「一位小数」，与校验口径一致；
+        // 键盘只是体验层，真正的护栏仍是下面的 parseFloat + 区间校验（非法输入不落盘）。
+        input.setInputType(android.text.InputType.TYPE_CLASS_NUMBER
+                | android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL);
+        input.setSingleLine(true);
+        input.setText(String.format(java.util.Locale.US, "%.2f",
+                Float.valueOf(com.tamer.bili.hooks.SpeedPolicy.fromPct(
+                        getSp().getInt(BiliConfig.KEY_SPEED_PCT,
+                                BiliConfig.defaultIntOf(BiliConfig.KEY_SPEED_PCT))))));
+        input.setTextSize(16);
+        input.setGravity(Gravity.CENTER);   // stub 只有 CENTER，无 CENTER_HORIZONTAL
+        LinearLayout.LayoutParams ilp = new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        ilp.leftMargin = dp * 12;
+        ilp.rightMargin = dp * 12;
+        row.addView(input, ilp);
+
+        TextView unit = new TextView(this);
+        unit.setText("x");
+        unit.setTextColor(Color.parseColor("#888888"));
+        unit.setTextSize(16);
+        row.addView(unit);
+
+        android.widget.Button save = new android.widget.Button(this);
+        save.setText("保存");
+        save.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                float v2;
+                try {
+                    v2 = Float.parseFloat(input.getText().toString().trim());
+                } catch (Throwable t) {
+                    Toast.makeText(SettingsActivity.this, "请输入数字，例如 1.5",
+                            Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                if (Float.isNaN(v2) || Float.isInfinite(v2)
+                        || v2 < com.tamer.bili.hooks.SpeedPolicy.MIN
+                        || v2 > com.tamer.bili.hooks.SpeedPolicy.MAX) {
+                    // 边界值直接用 SpeedPolicy 的常量，别在这里另写一份 0.25/3.0：
+                    // 两处各写一遍就是将来改了一处、另一处静默失配的起点。
+                    Toast.makeText(SettingsActivity.this,
+                            String.format(java.util.Locale.US,
+                                    "倍速需在 %.2fx ~ %.2fx 之间",
+                                    Float.valueOf(com.tamer.bili.hooks.SpeedPolicy.MIN),
+                                    Float.valueOf(com.tamer.bili.hooks.SpeedPolicy.MAX)),
+                            Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                int pct = com.tamer.bili.hooks.SpeedPolicy.toPct(v2);
+                // 用 commit() 而不是 apply()：紧接着 persistAll → ConfSync.saveAll 要把 SP
+                // 汇总成 conf 副本投递出去，commit() 同步写盘后返回，这份副本一定带上本次修改，
+                // 也避免「刚保存完进程被杀、磁盘还是旧值」。
+                // 注意别把理由写成「apply 会和 saveAll 赛跑读回旧值」——apply 会先同步更新
+                // 内存 mMap，同进程读到的必然是 new value（审计 NIT-6 纠正过的错误注释）。
+                getSp().edit().putInt(BiliConfig.KEY_SPEED_PCT, pct).commit();
+                // 回显规范化后的值：用户输 1.755 时实际存的是 176（1.76x），
+                // 不写回去的话界面显示与真实配置会一直对不上。
+                input.setText(String.format(java.util.Locale.US, "%.2f",
+                        Float.valueOf(com.tamer.bili.hooks.SpeedPolicy.fromPct(pct))));
+                persistAll(false);
+            }
+        });
+        row.addView(save, new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        root.addView(row, new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+    }
+
+    /**
+     * 「更多倍速档位」输入行：一行逗号分隔的档位表 + 保存按钮。
+     *
+     * 为什么是一个自由文本框而不是逐档加减的控件：纯代码 UI 没有 RecyclerView/资源可用，
+     * 而「粘贴一份列表」正是用户想要的动作（从国内版抄、从旧配置抄）。代价是要自己解析，
+     * 所以解析/去重/排序/夹取全部落在纯逻辑类 {@link com.tamer.bili.hooks.SpeedListPolicy}
+     * 里，由 {@code tools/speedlistpolicy_test.py} 逐格钉住；本方法只负责「读原文 → 存规范值」。
+     *
+     * 保存时<b>回显规范化结果</b>：用户写 {@code 0.5, 1.5, 1.5, 9} 时，实际生效的是
+     * {@code 3,1.5,0.5}（去重 + 夹到 3.0 + 降序），不写回去的话界面显示与真实菜单会永久对不上。
+     */
+    private void addSpeedListInput(int dp) {
+        TextView t1 = new TextView(this);
+        t1.setText("更多倍速档位（自定义列表）");
+        t1.setTextColor(Color.parseColor("#222222"));
+        t1.setTextSize(16);
+        t1.setPadding(0, dp * 10, 0, 0);
+        root.addView(t1);
+
+        TextView t2 = new TextView(this);
+        t2.setText("填了就用你这份列表「替换」播放器倍速菜单里的档位；留空 = 不接管（用 B 站自带）。\n"
+                + "逗号/空格分隔，单位 x，范围 0.25 ~ 3.0（超过 3.0 会被夹到 3.0，因为播放内核硬限制）；\n"
+                + "会自动去重并按速度从高到低排列（与 B 站原生菜单顺序一致）。\n"
+                + "例：" + com.tamer.bili.hooks.SpeedListPolicy.EXAMPLE + "\n"
+                + "默认倍速开着时，如果上面那个值不在这张表里，会自动补进去（否则想回到默认值都没入口）。\n"
+                + "保存后即时生效：回到 B 站重新打开一次倍速面板即可看到（无需重启）。\n"
+                + "仅适配国际版 6.7.1 实测锚点，其它版本可能静默不生效");
+        t2.setTextColor(Color.parseColor("#888888"));
+        t2.setTextSize(12);
+        root.addView(t2);
+
+        final android.widget.EditText input = new android.widget.EditText(this);
+        input.setSingleLine(true);
+        // 这里必须允许逗号/小数点/字母 x，所以是文本键盘，不能沿用上面那个数字键盘。
+        input.setInputType(android.text.InputType.TYPE_CLASS_TEXT);
+        input.setHint(com.tamer.bili.hooks.SpeedListPolicy.EXAMPLE);
+        String cur = getSp().getString(BiliConfig.KEY_SPEED_LIST, "");
+        input.setText(cur == null ? "" : cur);
+        input.setTextSize(14);
+        LinearLayout.LayoutParams ilp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        ilp.topMargin = dp * 6;
+        root.addView(input, ilp);
+
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setPadding(0, dp * 6, 0, dp * 4);
+        root.addView(row, new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        android.widget.Button fill = new android.widget.Button(this);
+        fill.setText("填入常用档位");
+        fill.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                input.setText(com.tamer.bili.hooks.SpeedListPolicy.EXAMPLE);
+            }
+        });
+        row.addView(fill);
+
+        android.widget.Button save = new android.widget.Button(this);
+        save.setText("保存档位");
+        save.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                String text = input.getText() == null ? "" : input.getText().toString();
+                float[] parsed = com.tamer.bili.hooks.SpeedListPolicy.parse(text);
+                String canonical = com.tamer.bili.hooks.SpeedListPolicy.format(parsed);
+                if (parsed.length == 0 && text.trim().length() > 0) {
+                    // 有输入但一格都没解析出来：不落盘、明确说清楚，别把用户原来的配置清掉
+                    toast("没认出任何有效倍速，请用逗号分隔的 0.25~3.0 数字，例如 "
+                            + com.tamer.bili.hooks.SpeedListPolicy.EXAMPLE);
+                    return;
+                }
+                // commit() 而不是 apply()：理由同默认倍速输入框——紧接着要整表汇总成 conf 投递，
+                // 同步写盘才能保证这份副本与界面一致（PITFALLS §60）。
+                getSp().edit().putString(BiliConfig.KEY_SPEED_LIST, canonical).commit();
+                input.setText(canonical);   // 回显规范化结果
+                persistAll(false);
+                toast(parsed.length == 0
+                        ? "已清空：使用 B 站自带倍速档位"
+                        : "已保存 " + parsed.length + " 档：" + canonical);
+            }
+        });
+        row.addView(save);
+
+        addSpace(dp * 4);
+    }
+
+    /**
+     * 「导出日志」：向宿主进程要一份内存日志，再由模块自己写成文件。
+     *
+     * <b>为什么这样分工：</b>日志是在<b>宿主进程</b>（B 站）里产生的，模块进程拿不到；
+     * 而写文件这件事在<b>模块进程</b>里做是零权限的（写自己的目录）。
+     * 所以按钮做两件事：先广播向宿主要日志，再用 {@link com.tamer.bili.LogExport} 落盘。
+     *
+     * 早一版的做法是让宿主的日志直接由 root 写 /sdcard，结果引入四个坑：
+     * 每个进程一份文件、需要给 B 站本身授权 root、启动 su 拖慢宿主、chmod 在 FUSE 上假失败。
+     * 一个导出按钮完全不值得这些代价。
+     */
+    private void addLogExportRow(int dp) {
+        TextView t1 = new TextView(this);
+        t1.setText("导出日志");
+        t1.setTextColor(Color.parseColor("#222222"));
+        t1.setTextSize(16);
+        t1.setPadding(0, dp * 10, 0, 0);
+        root.addView(t1);
+
+        TextView t2 = new TextView(this);
+        t2.setText("点下面的按钮，会把 B 站进程里最近约 1000 行模块日志写成文件：\n"
+                + "优先公共下载目录 Download/" + com.tamer.bili.LogExport.DIR_NAME + "/，"
+                + "被系统拒绝时退到应用专属目录（按钮会直接告诉你实际路径）。\n"
+                + "排查「功能没生效」时，先打开 B 站播一个视频，再回来点这个按钮。");
+        t2.setTextColor(Color.parseColor("#888888"));
+        t2.setTextSize(12);
+        root.addView(t2);
+
+        android.widget.Button btn = new android.widget.Button(this);
+        btn.setText("导出日志到文件");
+        btn.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                exportLog();
+            }
+        });
+        root.addView(btn, new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        addSpace(dp * 6);
+    }
+
+    /** 广播向宿主要日志 → 收到后写文件。超时则明确说「B 站没响应」，不假装成功。 */
+    private void exportLog() {
+        final String action = "com.tamer.bili.LOG_DUMP";
+        try {
+            final android.content.BroadcastReceiver[] holder = new android.content.BroadcastReceiver[1];
+            holder[0] = new android.content.BroadcastReceiver() {
+                @Override public void onReceive(android.content.Context c, android.content.Intent i) {
+                    try {
+                        String text = i.getStringExtra("log");
+                        String proc = i.getStringExtra("proc");
+                        if (text == null || text.length() == 0) {
+                            toast("B 站那边没有日志（可能还没播过视频，或模块未在 B 站内加载）");
+                        } else {
+                            com.tamer.bili.LogExport.Result r =
+                                    com.tamer.bili.LogExport.write(SettingsActivity.this, text,
+                                            proc == null ? "main" : proc);
+                            toast(r.ok
+                                    ? "已导出 " + text.split("\n").length + " 行\n"
+                                      + r.path + "\n（" + r.note + "）"
+                                    : "导出失败：" + r.note);
+                        }
+                    } catch (Throwable t) {
+                        toast("导出失败：" + t);
+                    } finally {
+                        try {
+                            unregisterReceiver(holder[0]);
+                        } catch (Throwable ignored) {
+                        }
+                    }
+                }
+            };
+            registerReceiver(holder[0], new android.content.IntentFilter(action), 2);
+            android.content.Intent req = new android.content.Intent(action);
+            req.setPackage(BiliConfig.TARGET_PKG);
+            // INCLUDE_STOPPED_PACKAGES：B 站被系统冻结/刚被划掉时也在收件范围内。
+            // 用户点导出时 B 站很可能刚好在后台被冻结，不加这个标志会静默收不到
+            // ——表现就是「点了没反应」，那正是我们要避免的体验。
+            req.addFlags(android.content.Intent.FLAG_INCLUDE_STOPPED_PACKAGES);
+            sendBroadcast(req);
+            // 宿主没在前台/没加载模块时不会有回应：3 秒后明确告诉用户，而不是一直等。
+            new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(new Runnable() {
+                @Override public void run() {
+                    try {
+                        unregisterReceiver(holder[0]);
+                        toast("B 站没有响应。请先打开 B 站播一个视频，再回来点导出");
+                    } catch (Throwable ignored) {
+                        // 已经收到回执并注销了：这条就不用再提示
+                    }
+                }
+            }, 3000);
+        } catch (Throwable t) {
+            toast("导出失败：" + t);
+        }
+    }
+
+    private void toast(String msg) {
+        Toast.makeText(SettingsActivity.this, msg, Toast.LENGTH_LONG).show();
     }
 
     private void addSpace(int px) {

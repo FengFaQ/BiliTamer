@@ -7,6 +7,7 @@ public class EditText extends TextView {
     public EditText(Context context) { super(context); }
     public void setHint(CharSequence hint) { }
     public void setSingleLine(boolean singleLine) { }
+    public void setInputType(int type) { }
     public void setMinLines(int minLines) { }
     public void addTextChangedListener(android.text.TextWatcher watcher) { }
     public Editable getText() { return null; }

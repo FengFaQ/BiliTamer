@@ -100,6 +100,9 @@ public class MainHook extends XposedModule implements HookApi {
             if (main && !domesticHost) {
                 installConfDelivery(cl);
             }
+            if (main) {
+                installLogDumpReceiver();
+            }
             info("BiliTamer hooks installed: total=" + hookHandles.size());
         } catch (Throwable t) {
             error("onPackageReady crashed", t);
@@ -135,7 +138,9 @@ public class MainHook extends XposedModule implements HookApi {
                     + " feed_no_portrait=" + isFeedNoPortraitEnabled()
                     + " feed_no_large_card=" + isFeedNoLargeCardEnabled()
                     + " player_no_activity_meta=" + isPlayerNoActivityMetaEnabled()
-                    + " player_no_under_ad=" + isPlayerNoUnderAdEnabled());
+                    + " player_no_under_ad=" + isPlayerNoUnderAdEnabled()
+                    + " playback_speed_enabled=" + isPlaybackSpeedEnabled()
+                    + " playback_speed_pct=" + getPlaybackSpeedPct());
         } catch (Throwable t) {
             warn("logConfig failed: " + t);
         }
@@ -255,6 +260,92 @@ public class MainHook extends XposedModule implements HookApi {
                     new com.tamer.bili.hooks.AccelHooks(MainHook.this, cl, false, hostPackage).install();
                 }
             });
+            // 默认倍速：只装在主进程。起播链（onPrepared → setPlaySpeed）跑在播放器所在的
+            // Java 进程；:ijkservice 只有 native 解码，:download 不播放。
+            // 走 install() 而不是内联 try/catch，是为了「一组挂了不影响其它组」，
+            // 且失败会落成一条带组名的 error 行。
+            install("SpeedHooks", new ThrowingAction() {
+                @Override public void run() throws Throwable {
+                    new com.tamer.bili.hooks.SpeedHooks(MainHook.this, cl).install();
+                }
+            });
+            // 自定义倍速档位表：同样只装主进程。它改的是播放器菜单列表的出口，
+            // 与默认倍速共享 UI 层但落点完全独立（一个改「起播速度」，一个改「菜单档位」），
+            // 所以分成两个 install 组：一组锚点漂了不影响另一组。
+            install("SpeedMenuHooks", new ThrowingAction() {
+                @Override public void run() throws Throwable {
+                    new com.tamer.bili.hooks.SpeedMenuHooks(MainHook.this, cl).install();
+                }
+            });
+        }
+    }
+
+    /**
+     * 响应模块设置页的「导出日志」广播：把内存日志环里的一份回过去。
+     *
+     * <b>为什么由宿主进程回、而不是宿主自己写文件：</b>日志在这里产生，
+     * 但写文件在模块进程里是零权限的；宿主写 /sdcard 则要 su、且每个进程一份。
+     * 所以这里只负责「把内存里那 1000 行交出去」，落盘交给模块。
+     *
+     * <b>为什么动态注册而不是在 manifest 里声明：</b>本模块没有可用的 Application 上下文
+     * 在宿主进程里注册静态接收器；而这条通道只在用户点按钮的瞬间有用，
+     * 动态注册在进程启动时挂上就够，也避免了给宿主加一个常驻导出入口。
+     *
+     * 回传用**显式 setPackage(模块包名)**：不指定包名的话，任何应用都能注册同 action
+     * 的接收器把日志收走（日志里有设备型号与用户开启的开关，不是能公开发的东西）。
+     */
+    private void installLogDumpReceiver() {
+        try {
+            android.content.Context app = currentApplication();
+            if (app == null) {
+                warn("logdump: no application context, export button will not work");
+                return;
+            }
+            android.content.BroadcastReceiver r = new android.content.BroadcastReceiver() {
+                @Override public void onReceive(android.content.Context c, android.content.Intent i) {
+                    try {
+                        String text = LogRing.snapshot(LogRing.CAP);
+                        android.content.Intent out = new android.content.Intent(BiliConfig.ACTION_LOG_DUMP);
+                        out.setPackage(BiliConfig.MODULE_PKG);
+                        out.putExtra("log", text);
+                        out.putExtra("proc", roleName());
+                        c.sendBroadcast(out);
+                        info("logdump: sent " + LogRing.size() + " line(s) to module");
+                    } catch (Throwable t) {
+                        warn("logdump: send failed: " + t);
+                    }
+                }
+            };
+            app.registerReceiver(r, new android.content.IntentFilter(BiliConfig.ACTION_LOG_DUMP), 2);
+            info("logdump: receiver armed");
+        } catch (Throwable t) {
+            warn("logdump: register failed: " + t);
+        }
+    }
+
+    private String roleName() {
+        if (processName == null) {
+            return "main";
+        }
+        return processName.contains(":") ? "sub" + processName.substring(processName.indexOf(':')) : "main";
+    }
+
+    /**
+     * 取宿主的 Application 实例。
+     *
+     * 为什么用反射：libxposed 的 PackageReadyParam 只给 ClassLoader，不给 Context；
+     * 而 {@code ActivityThread.currentApplication()} 是各版本都在的稳定入口。
+     * 走反射而非直接引用，是因为宿主可能用的是同一类的不同副本，直接强转会 ClassCastException。
+     */
+    private android.content.Context currentApplication() {
+        try {
+            Class<?> at = Class.forName("android.app.ActivityThread");
+            java.lang.reflect.Method m = at.getDeclaredMethod("currentApplication");
+            m.setAccessible(true);
+            Object app = m.invoke(null);
+            return app instanceof android.content.Context ? (android.content.Context) app : null;
+        } catch (Throwable t) {
+            return null;
         }
     }
 
@@ -830,6 +921,51 @@ public class MainHook extends XposedModule implements HookApi {
                 BiliConfig.defaultValueOf(BiliConfig.KEY_PLAYER_NO_UNDER_AD));
     }
 
+    @Override
+    public boolean isPlaybackSpeedEnabled() {
+        // 每次都从 config 现读，不缓存：设置页投递会整表替换 config（见 reloadFromDisk /
+        // 启动 Intent 那条腿），缓存在钩子里的副本只会让热生效变成「重启才生效」。
+        BiliConfig c = config;
+        return c != null && c.get(BiliConfig.KEY_SPEED_ENABLED,
+                BiliConfig.defaultValueOf(BiliConfig.KEY_SPEED_ENABLED));
+    }
+
+    /** 读取侧「被夹住」的取值：首条去重，避免每次起播刷屏（PITFALLS §10/§32）。 */
+    private final AtomicBoolean speedPctWarned = new AtomicBoolean(false);
+
+    @Override
+    public int getPlaybackSpeedPct() {
+        BiliConfig c = config;
+        int pct = c == null ? BiliConfig.defaultIntOf(BiliConfig.KEY_SPEED_PCT)
+                : c.getInt(BiliConfig.KEY_SPEED_PCT,
+                        BiliConfig.defaultIntOf(BiliConfig.KEY_SPEED_PCT));
+        // 写入侧是 25..300，读取侧兜底到 25..400（兼容手写 conf）。超出写入侧的值虽然仍会被
+        // fromPct 夹到 3.0f 生效，但必须留下痕迹：否则「设置页写 3.5 怎么只有 3.0」
+        // 在真机日志里查不到任何东西。首条去重，挂在读取处打一次就够。
+        if ((pct < com.tamer.bili.hooks.SpeedPolicy.PCT_WRITE_MIN
+                || pct > com.tamer.bili.hooks.SpeedPolicy.PCT_WRITE_MAX)
+                && speedPctWarned.compareAndSet(false, true)) {
+            warn("speed: conf pct=" + pct + " out of write range "
+                    + com.tamer.bili.hooks.SpeedPolicy.PCT_WRITE_MIN + ".."
+                    + com.tamer.bili.hooks.SpeedPolicy.PCT_WRITE_MAX
+                    + ", clamped to " + String.format(java.util.Locale.US, "%.2f",
+                    Float.valueOf(com.tamer.bili.hooks.SpeedPolicy.fromPct(pct))));
+        }
+        return pct;
+    }
+
+    @Override
+    public String getPlaybackSpeedList() {
+        // 同样每次现读：设置页改的是 SP → ConfSync 重写 conf → 投递整表替换 config。
+        // 缓存成 install 时的快照会让「改了菜单档位不生效」重演（与默认倍速同一个理由）。
+        BiliConfig c = config;
+        if (c == null) {
+            return "";
+        }
+        String raw = c.getString(BiliConfig.KEY_SPEED_LIST);
+        return raw == null ? "" : raw;
+    }
+
     // ===== 日志 =====
 
     @Override
@@ -865,5 +1001,27 @@ public class MainHook extends XposedModule implements HookApi {
             log(level, TAG, line, t);
         } catch (Throwable ignored) {
         }
+        // 同时留一份在内存环里：用户在设置页按「导出日志」时，模块会把这份要回去写成文件。
+        // 为什么不在宿主进程里直接落盘：那需要每条日志起一个 su 进程往 /sdcard 写，
+        // 还要给 B 站本身授权 root、并且每个进程各写一份——为了一个导出按钮引入四个坑不值。
+        // 内存环零成本，导出交给模块自己的进程（写自己的目录，零权限）。
+        try {
+            LogRing.add(levelName(level) + " " + line
+                    + (t == null ? "" : " | " + Log.getStackTraceString(t)));
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static String levelName(int level) {
+        if (level >= Log.ERROR) {
+            return "ERROR";
+        }
+        if (level >= Log.WARN) {
+            return "WARN";
+        }
+        if (level >= Log.INFO) {
+            return "INFO";
+        }
+        return "DEBUG";
     }
 }

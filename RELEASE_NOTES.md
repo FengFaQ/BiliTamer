@@ -1,5 +1,121 @@
 # BiliTamer Release notes
 
+## v1.10.2
+
+* **新功能：更多倍速档位（自定义列表）/ New: custom speed list for the player menu** —— 设置页
+  「播放器」分区新增一行输入框：填一份 0.25x–3.0x 的档位表（逗号/空格分隔，如
+  `0.5,0.75,1.0,1.25,1.5,1.75,2.0,2.5,3.0`），播放器倍速菜单就换成这份列表；留空 = 不接管。
+  超过 3.0 的档位夹到 3.0（native `libijkplayer` 的硬钳制，PITFALLS §15），自动去重、
+  按速度降序（与原生菜单同序）。默认倍速开着时，若默认值不在表里会自动补进去。
+  / One input row under the player section: fill a 0.25x–3.0x list (comma/space separated) and
+  the player's speed menu shows exactly that list; empty = untouched. Values above 3.0 are
+  clamped to 3.0 (kernel clamp), entries are deduped and sorted descending.
+* **落点是 dex 实证过的「档位表出口」/ The anchor is the menu-list funnel proven in the dex**：
+  6.7.1 的档位由 `com.bilibili.playerbizcommonv2.utils.B#a(MediaResource, Integer, boolean, int)
+  → ArrayList` 现场拼出（静态表 `[2.0,1.5,1.25,1.0,0.75,0.5]` + 受实验组 gate 的 3.0 档），
+  旧 RecyclerView 面板与 theseus Compose 面板**都**从这一个方法取列表，所以只挂一处即覆盖两条
+  UI 路径；元素类 `...utils.t`（Kotlin data class，`(float, boolean)` 构造器）。
+  / Both the legacy RecyclerView panel and the theseus Compose panel take the list from this one
+  static method, so a single post-hook covers both UI paths.
+* **不动宿主的静态字段、不动 UI 适配器 / Post-process only**: 不写 final 静态字段（各版本 ART
+  态度不一致、还会绕过 3.0 档的实验 gate），不碰 RecyclerView 适配器/Compose 状态
+  （那两处每版都会被重写）。形状校验 + 从宿主返回值反射元素类，宿主换混淆名也不需要改这里。
+  / No final-field writes and no UI-adapter hooks; shape validation plus reflecting the element
+  class out of the host's own return value keeps it working across obfuscation renames.
+* **修掉 v1.10.1 的一个静默回归：手动调速不再被拦截 / Fixed a silent regression from v1.10.1** ——
+  v1.10.1 靠调用栈里有没有 `PlaySpeedManagerImpl` 判「用户手动调速」，6.7.1 dex 实证这个类
+  **不在**两条真实手动链路的栈上（旧面板直接调 `A.setPlaySpeed`；Theseus 面板经
+  `theseus.keel.player.h#t(F)` 写 StateFlow 再由 flow 收集器回调），于是「跟随」变成了
+  「把用户选的档改回配置值」。v1.10.2 改成**只在起播时改，非起播一律放行**：用户选档天然
+  立即生效（不拦就是跟随），下一次起播再覆盖（不记忆）。连带删掉整台会话状态机
+  （`SpeedSession` 及其 19 格用例）与「初值兜底」L3 钩子——少两处改写面。
+  / v1.10.1 detected manual changes by looking for a class in the call stack; the 6.7.1 dex
+  shows that class is not on either real manual path, so the documented "follow the user"
+  behaviour silently became "revert the user". v1.10.2 only touches the argument on start
+  (`onPrepared`) and passes every other call through untouched.
+* **新增纯 JVM 单测 / New plain-JVM tests**: `python3 tools/speedlistpolicy_test.py`，34 格覆盖
+  解析/去重/夹取/排序/上限/合并默认值；仍然不需要设备或 Android SDK。
+* **验证边界（诚实说明）/ Verification boundary**: 本版的上机验证只做到**静态 dex 实证 + 构建通过 +
+  纯逻辑单测**——开发环境没有可用真机（`adb devices` 为空），所以「菜单里真的多出这些档位」
+  这一条未做实机 A/B。日志口径按 PITFALLS §32 分成 `armed`（挂上）与 `applied`（真的换了），
+  首次生效会打出完整档位表，排查时以那两行为准。
+  / Verified statically (dex + build + pure-logic tests); no device was available, so the on-screen
+  result was not A/B'd. Watch the `armed`/`applied` log lines for on-device confirmation.
+
+## v1.10.1
+
+* **v1.10.0 的倍速功能在真机上一倍速都没改 —— 整条链是错的，本版重做 / The v1.10.0 speed feature
+  did nothing on device; the whole chain is rebuilt here**: v1.10.0 照搬了 biliSpeed 的锚点
+  （`AbstractMediaPlayer#notifyOnInfo` → `mOnPreparedListener` → `resume()`）。反编译国际版 6.7.1
+  (9161100) 后发现三个**独立**死因：① 本版 `IjkMediaPlayer` 根本没有 `resume()`，起播锚点不存在；
+  ② `notifyOnInfo` 只是通用 info 分发，不是起播入口；③ **速度真值在上层**——每次起播
+  `eK1.f#onPrepared` 都会从 pref `player_key_video_speed` 重算初值（默认 1.0f）并覆盖一遍，
+  所以只改内核等于白改。
+  / Ported anchors from biliSpeed were dead on this build for three separate reasons: no `resume()`
+  exists, `notifyOnInfo` isn't the start entry, and the effective value is recomputed upstream on
+  every start — so patching the kernel alone gets overwritten.
+* **新落点：`setPlaySpeed(float)` 的入参 / New anchor: the argument of `setPlaySpeed(float)`**:
+  这个入参在方法体内同时被写进 pref、经 `Ops.OpSwitchSpeed` 下发内核、并打进日志，替换它三处一致；
+  只 hook 返回值会与 pref 对不上。附带说明：宿主只在参数 `== 2.0f` 时特殊改成 `1.99f` 下发。
+  / The same argument feeds the pref, the Ops dispatch and the log line, so replacing it keeps all
+  three consistent; hooking the return value would leave the pref disagreeing.
+* **抗漂移 / Drift resistance**: `eK1.q`/`eK1.f`/`JL1.d` 都是 R8 混淆名，所以按「哪个类声明了
+  `setPlaySpeed(float)`」定位（该方法是 Kotlin 真名，不混淆），类名只当提示；初值方法 `R0`
+  退到「该类上唯一的 `(Z)F`」。提示名未命中时**不猜**，直接打一条「去新包里找谁声明了
+  `setPlaySpeed(float)`」的 warn。
+* **语义简化且明确 / Simpler, explicit semantics**: **每次起播都套用默认倍速**（含暂停后继续、
+  切清晰度），用户手动调速立即跟随但只在这一段播放内有效。曾有更强的设计——自动区分
+  「同片继续 / 换片」，但 dex 实证 `player_key_video_speed` 是宿主跨视频持久化的设置键、
+  `onPrepared` 也不是换片信号，没有可靠判据；没有可靠判据就不猜，设置页文案已同步写明。
+  / Every start applies the configured speed (including resume and quality switches); a manual
+  change is followed but lasts only for that playback segment.
+* **新增会话状态机的顺序测试 / New sequence tests for the session state machine**:
+  `python3 tools/speedsession_test.py`（19 格）。抽这个类是因为真正出过错的是**事件顺序**
+  （第一版把「同片暂停继续」当换片、把手动值静默清掉），而每条单次判定的用例都是绿的；
+  变异测试确认这套用例会真的红。（注：v1.10.2 把语义改成「非起播零干预」后，这套状态机
+  与用例一并删除——见 v1.10.2 条目。）
+* **新增「导出日志到文件」按钮 / New "export logs" button**: 设置页最下方，点一下就把 B 站进程里
+  最近约 1000 行模块日志写成文件，并直接显示**路径与行数**——不需要 adb、不需要 root。
+  日志在宿主进程产生、由模块自己的进程落盘（宿主只留一份内存环），所以不会出现
+  「每个进程一份文件」「要求给 B 站授权 root」这些麻烦。优先写公共
+  `Download/BiliTamer/`，被分区存储拒绝时退回 `Android/data/com.tamer.bili/files/BiliTamer/`。
+  / One button at the bottom of the settings page exports the last ~1000 module log lines and
+  shows the exact path and count — no adb, no root.
+* 倍速默认仍为**关**；解码/音质/首页等其余功能与 v1.10.0 一致。
+
+## v1.10.0
+
+* **默认倍速 / Default playback speed**: 移植自 [biliSpeed](https://github.com/V-E-O/biliSpeed) 的 B 站段，
+  只搬「每次起播套用默认倍速」这一件事（其它平台的 hook 不搬）。设定 0.25x–3.0x，每次起播（含暂停后继续）
+  自动套用；在播放器里手动调速会**立即跟随**，但**不记住**——切到下一个视频回落设定值。
+  上限 3.0x 是播放内核自己的硬钳制，本模块不承诺更高档位。
+  / Ported the Bilibili half of biliSpeed, and only the "apply a default speed at every start" part.
+  A manual speed change in the player is followed immediately but intentionally not remembered; 3.0x is the
+  playback kernel's own clamp.
+* **这条链是别人在混淆版本上试出来的，所以每环都留了读数 / Every stage of the chain reports itself**:
+  锚点链 `notifyOnInfo → onPrepared → 持有链 → setSpeed / resume` 共 6 环，任何一环断了只记一条带环号的
+  warn（`speed: anchor L5 …`）并停手，不会让宿主崩，也不会假装成功。真机上 `speed:` 前缀的
+  `armed`/`applied` 行分开读：`armed` 是「钩子挂上了」，`applied` 才是「速度真的设上了」。
+  / The anchor chain is a shape someone reverse-engineered on one obfuscated build; each stage fails soft
+  with its own `stage=Ln` line, and `armed` vs `applied` are reported separately.
+* **写回会重入自己的钩子 —— 加了按对象的守卫 / A self-reentrancy guard for the write-back**:
+  旧思路靠「请求值等于当前值就不动手」终止递归，宿主在中间插一次别的值就能绕开，结果是栈溢出；
+  现在按播放器对象标记「这次调用是我们自己发的」（集合而非单开关，避免把另一条线程上合法的复位吞掉）。
+  / Terminating the recursion by value comparison is not sound once the host inserts a third value;
+  the guard is keyed per player object.
+* **手动值只活在本对象本会话 / The manual value lives for one player object only**:
+  「我们设过的值」与「用户手调的值」分成两份状态，换播放器对象即回落配置值——不会把上一部片子的手速
+  串到下一个视频。/ Two separate states, so a manual speed can't leak into the next video.
+* **倍速以整数百分比落盘 / Speeds are stored as integer percentages**: conf 的严格解析只认
+  boolean/int/字符串，浮点键会让整份配置被丢弃；写入侧 25..300、读取侧兜底 25..400，
+  读取到越界值时留一条日志而不是静默夹取。/ Floats can't go through the strict conf parser (they'd take
+  the whole file down with them), so the value is stored as hundredths; out-of-range reads log once.
+* **设置页 / Settings UI**: 播放器分区新增倍速开关 + 数字输入框（数字键盘），越界或非数字一律拒绝保存并提示，
+  保存后回显规范化后的值。/ New switch plus a numeric input under the player section; invalid input is
+  rejected rather than silently clamped.
+* **新增纯 JVM 单测 / New plain-JVM unit tests**: `python3 tools/speedpolicy_test.py`，61 格覆盖 clamp、
+  起播取值、手动判定、百分比换算；不需要设备或 Android SDK。/ 61 cases over the speed-decision logic.
+
 ## v1.9.9
 
 * **视频弹幕回来了 / In-video danmaku is back**: 详情页那一族只武装 `View` 一个方法（`AIRelateAsync`

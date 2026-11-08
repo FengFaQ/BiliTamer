@@ -27,6 +27,8 @@ An LSPosed module for the **international Bilibili app** (`com.bilibili.app.in`,
 | 解码顺位 Decoder preference | AV1 > HEVC > H264 自动顺位，或锁定某一种（含**锁定 H264** 兜底档），或**关闭（不干预）**；自动顺位按设备硬解能力过滤请求位（先清后设，宿主已置的位也会被移除），不能硬解的编码不下发（只过滤请求，不替换解码）/ AV1 > HEVC > H264 auto preference, or lock one (incl. **lock H264** fallback) or **off (untouched)**; auto mode explicitly clears + re-sets request bits by hw-decode capability (bits the host already set are also removed) so undecodable codecs aren't delivered (filter only, no substitution) | 自动 auto |
 | 音质顺位 Audio preference | 杜比全景声 > Hi-Res > AAC 自动顺位，或锁定，或**关闭（不干预）** / Dolby > Hi-Res > AAC auto preference, or lock, or **off (untouched)** | 自动 auto |
 | HDR 画质顺位 HDR preference | HDR Vivid > HDR > SDR 自动顺位，或锁定/强制关闭，或**关闭（不干预）** / HDR Vivid > HDR > SDR auto preference, or lock/force-off, or **off (untouched)** | 自动 auto |
+| 默认倍速 Default playback speed | 每次起播自动套用设定倍速（0.25x–3.0x）；在播放器里手动调速立即跟随，但只在这一段播放内有效（下次点播放/暂停后继续回默认值）；3.0x 以上是播放内核的硬钳制，本模块不提供也不承诺 / Apply a fixed speed at every start (0.25x–3.0x); a manual change in the player is followed immediately but lasts only for that playback segment (a resume returns to the default); above 3.0x is the playback kernel's own clamp | 关 off |
+| 更多倍速档位 Custom speed list | 用一份自定义档位表**替换**播放器倍速菜单（0.25x–3.0x，自动去重/降序/最多 12 档）；留空 = 用 B 站自带档位；默认倍速不在表里时自动补进去。3.0x 以上同受内核硬钳制 / Replace the player's speed menu with your own list (0.25x–3.0x; deduped, descending, max 12); empty = stock list; the configured default speed is added if missing. Above 3.0x the kernel clamps | 空 off |
 | 听视频听完暂停 Pause after video | 听视频（全屏音频播放器）播完当前视频即暂停，不自动连播（零监听实现）/ Pause when the current video ends in the listen-mode fullscreen audio player instead of auto-advancing (zero-listener implementation) | 关 off |
 | 隐藏互动提示 Hide interaction hints | 一键三连动画/文案、投票面板、UP 关注引导气泡 / Hide triple-action animation, vote panel and follow-bubble hints | 关 off |
 | 首页不自动刷新 No home auto-refresh | 从后台/其它页面切回首页时不自动重载推荐流；下拉/点 tab/首次进入不受影响 / Skip the automatic feed reload when returning to the home page; manual refresh unaffected | 关 off |
@@ -124,6 +126,18 @@ process freezing). libxposed's `onPackageReady` delivers the right classLoader i
   / The keystore is supplied via gitignored tools/signing.local — the repo contains no keys;
 * 产物：`dist/BiliTamer-v<版本>.apk` / output at dist/BiliTamer-v<ver>.apk.
 
+### 纯逻辑单测 / Unit tests
+
+    python3 tools/speedpolicy_test.py     # 倍速决策：39 格
+    python3 tools/speedlistpolicy_test.py # 档位表解析/合并：34 格
+
+* 倍速决策（clamp / 起播取值 / 整数百分比换算）与档位表（解析/去重/夹取/合并）都是纯静态、
+  零 android 依赖的实现，
+  这套用例在**纯 JVM** 上跑，不需要设备也不需要 Android SDK；全过 exit 0，有失败 exit 1 并逐条打印
+  「用例名 + 预期 vs 实际」。class 只落在临时目录，不进 `build/`（见 [PITFALLS.md](PITFALLS.md) §52）
+  / The speed-decision logic is pure static with no android dependency; the suite runs on a plain JVM,
+  no device or Android SDK needed — exit 0 when green, otherwise per-case expected/actual.
+
 ## 项目结构 / Layout
 
     BiliTamer/
@@ -134,6 +148,8 @@ process freezing). libxposed's `onPackageReady` delivers the right classLoader i
     │   ├── engine/                     # 自包含构建引擎（builder/axml/arsc/SignApk/dx/apksig/编译桩）/ vendored engine
     │   ├── libxposed/                  # libxposed API jar（Apache-2.0）+ PROVENANCE.md
     │   ├── signing.local               # 签名密钥（gitignored）/ keystore pointer (gitignored)
+    │   ├── speedpolicy_test.py         # 倍速决策单测 / speed-decision unit tests
+    │   ├── speedlistpolicy_test.py     # 倍速档位表解析/合并单测 / speed-list unit tests
     │   └── icon/ic_launcher.png
     ├── app/src/main/java/com/tamer/bili/
     │   ├── MainHook.java               # libxposed 入口 + 特性装配 / entry & feature wiring
@@ -143,12 +159,49 @@ process freezing). libxposed's `onPackageReady` delivers the right classLoader i
     │   └── ui/                         # 纯代码设置界面、配置投递、分区词表编辑 / code-only settings, config delivery
     └── PITFALLS.md                     # 实现笔记与坑 / implementation notes & pitfalls
 
+## 日志导出 / Exporting logs
+
+设置页最下方有一个 **「导出日志到文件」** 按钮，**不需要 adb、不需要 root**：
+
+1. 打开 B 站，播一个视频，复现你遇到的问题；
+2. 回到本模块设置页，点「导出日志到文件」；
+3. 按钮会直接告诉你**文件路径和行数**，用文件管理器或数据线取走即可。
+
+写入位置（按钮会显示实际用的是哪一个）：
+
+    公共下载：   /sdcard/Download/BiliTamer/bilitamer-<时间>-main.log     ← 优先
+    应用专属：   /sdcard/Android/data/com.tamer.bili/files/BiliTamer/...  ← 系统拒绝时退到这
+
+* Android 11+ 的分区存储通常不允许应用写公共 Download，那时会自动退到应用专属目录
+  （文件管理器里能看到，但系统「下载」应用里不会列出来）；
+* 内容只包含**模块自己的日志**（不含账号、cookie、播放地址），并带设备型号与系统版本，
+  发日志时不用再补充环境信息；
+* 宿主进程只保留最近 **1000 行**内存日志，所以**先复现再导出**，隔太久会被挤掉
+  / The export button pulls the last ~1000 in-memory log lines from the host process and
+  writes them from the module's own process — no adb, no root. Reproduce first, then export.
+
 ## 排查 / Troubleshooting
 
 * LSPosed 日志过滤 `BiliTamer`：安装成功有 `hooks installed` 与各 hook `ok` 行
   / filter `BiliTamer` in LSPosed logs; look for `hooks installed` and per-hook `ok` lines;
 * 详细日志开关打开后可见 `kmp header value rewritten` / `rest params rewritten` 等改写细节
   / enable verbose logging for rewrite details;
+* 默认倍速不生效：日志里 `speed:` 前缀看三件事——`anchor L1 hit hint …#setPlaySpeed` 是找到落点了，
+  `armed on …#setPlaySpeed(float)` 是钩子挂上了，`applied 1.50 at start` 才是真的改上了。
+  只有 `anchor L1 miss` 说明这版宿主把类名换了（`eK1.q` 是混淆名）：去新包 dex 里找
+  「谁声明了 `setPlaySpeed(float)`」，把它加进 `SpeedHooks.CANDIDATE_HOLDERS` 即可
+  （见 [PITFALLS.md](PITFALLS.md) §60）/ for the default-speed feature, `speed:` lines tell three
+  things apart: anchor found / armed / `applied` (actually changed). `anchor L1 miss` means the
+  obfuscated holder was renamed — re-anchor by finding the class that declares
+  `setPlaySpeed(float)` and add it to CANDIDATE_HOLDERS;
+* 自定义倍速档位不生效：看 `speedmenu:` 前缀——`anchor hit …#a(MediaResource,Integer,boolean,int)ArrayList`
+  是找到档位表出口，`armed on … (stage=M1)` 是挂上了，`applied 9 entries [...] (host offered 7)`
+  才是真的换了表。只有 `anchor miss` 说明这版宿主把混淆类名换了：去新包 dex 里找「谁声明了
+  `static (MediaResource, Integer, boolean, int) → ArrayList` 且同类有静态 `List` 字段」，
+  把它加进 `SpeedMenuHooks.CANDIDATE_HOLDERS`（见 [PITFALLS.md](PITFALLS.md) §62）；
+  菜单里看不到新档位时先确认「保存档位」后输入框已回显规范化列表（回显即已落盘）。
+  / for the custom speed list, `speedmenu:` lines separate anchor-found / armed / `applied`
+  (with the exact entry list); only `anchor miss` means the obfuscated holder was renamed;
 * 功能不生效：确认开关已开、作用域勾选、强停重开；升级 B 站后混淆锚点（如 fnval 的 `aK1.a`、
   feed 入口 `pegasus.request.h.a`）可能漂移导致静默失效，以日志为准 / after app upgrades the
   obfuscated anchors may drift silently — trust the logs, and see PITFALLS.md for calibration.
@@ -157,6 +210,12 @@ process freezing). libxposed's `onPackageReady` delivers the right classLoader i
 
 * 仅适配实测版本 6.3.0 / 6.4.0 / 6.5.0 / 6.6.0 / 6.7.1；其它版本需自行校准混淆锚点 / tested against
   these versions only;
+* 「默认倍速」与「更多倍速档位」两项的锚点**只在 6.7.1 上校准过**（`eK1.q#setPlaySpeed` /
+  `playerbizcommonv2.utils.B#a`），在 6.3.0–6.6.0 上大概率静默不生效（日志会给出
+  `speed: anchor L1 miss` / `speedmenu: anchor miss`）；这两项也不改变宿主其它与倍速相关的
+  硬编码判定（半屏播放器图标、「2 倍/3 倍」判定、长按倍速），只动菜单显示与起播速度 /
+  the speed features are anchored on 6.7.1 only — expect them to be inert (with a clear log
+  line) on older hosts;
 * 国际版评论区目前没有广告；横幅等广告仅在使用全局身份声明（v1.2 旧行为）时出现，
   默认的评论区限定模式无此副作用 / The international comment area currently has no ads;
   banner ads only appear when the legacy global identity declaration is used — the default
