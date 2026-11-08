@@ -27,6 +27,9 @@ python3 tools/build_module.py
 # 产物：dist/BiliTamer-v<version>.apk
 ```
 
+* **发布签名密钥**：同签名密钥以**加密 zip** 形式存放在
+  [`memory/signing/`](signing/README.md)（密码不在仓库，由维护者保管）。
+  新环境先向维护者要密码解压恢复，**不要**用新密钥发版——否则老用户无法原地升级。
 * 版本号在 `module_conf.py`（`version_name` / `version_code`，两者要一起加）。
 * 构建前先跑单测：
   `python3 tools/speedpolicy_test.py && python3 tools/speedlistpolicy_test.py`

@@ -39,7 +39,12 @@ jadx 装上不动的备用方案是直接用 androguard 打印指令（本仓库
   不过 **CI 在 GitHub 侧创建 Release 并上传附件不受此影响**（云端执行）。
 * npm/pip 镜像可用（pip 配了清华源时）。
 
-## 4. 凭据位置（**不进仓库**）
+## 4. 凭据位置
+
+* **发布签名密钥**：已加密后放进仓库 `memory/signing/BiliTamer-signing-key-encrypted.zip`
+  （**加密 zip / AES-256**；密码由维护者单独保管，不在仓库任何文件里）。
+  新环境要用同一签名发版时：向维护者要密码 → 解压 → 按包内 `README.txt` 恢复
+  `tools/signing.local` → 构建。细节见 `memory/signing/README.md`。
 
 * SSH 私钥/公钥、口令、PAT 记录：Windows `C:\Users\Administrator\.ssh\`
   （`id_rsa` / `id_rsa.pub` / `GITHUB_CREDENTIALS.md` / `config` 里 `github.com → ssh.github.com:443`）。

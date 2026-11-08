@@ -16,6 +16,7 @@
 5. [`ENVIRONMENT.md`](ENVIRONMENT.md) —— WSL 里怎么重建逆向/构建环境。
 6. [`SESSION-LOG.md`](SESSION-LOG.md) —— 按时间记录每次实质进展。
 7. [`ROADMAP.md`](ROADMAP.md) —— 接下来值得做的事。
+8. [`signing/`](signing/README.md) —— 发布签名密钥的**加密 zip**（密码不在仓库，由维护者保管）。
 
 ## 维护纪律
 
