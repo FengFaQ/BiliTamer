@@ -37,8 +37,10 @@
 **没有真机**（`adb devices` 为空），菜单显示与起播 `applied` 未 A/B。
 
 **本次收尾（同一天晚些时候）**：按用户要求把整个仓库推到 **FengFaQ/BiliTamer**
-（独立仓库，不再跟随上游），新增本 `memory/` 记忆目录并推送，打 `v1.10.2` tag 由 CI 发 Release，
-随后清理本机临时工作区。
+（独立仓库，不再跟随上游；`upstream` remote 保留为只读参考，push URL 已禁用），
+新增本 `memory/` 记忆目录并推送，打 `v1.10.2` tag 由 CI 发 Release
+（<https://github.com/FengFaQ/BiliTamer/releases/tag/v1.10.2>，附件 `BiliTamer-v1.10.2.apk`），
+随后清理本机临时工作区（签名密钥保留在本机，见 `ENVIRONMENT.md` §4）。
 
 **留给下次**：①有设备时按 `HANDOVER.md` §5 做上机确认；②`ROADMAP.md` 里的 6.6.0/6.5.0 校准；
 ③把审计/变异流程固化成脚本。

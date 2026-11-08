@@ -11,7 +11,10 @@
 | 分支 | `main`（本仓唯一开发分支；上游历史完整保留，见 `git log`） |
 | 上游基线 | `mengwuzhuanshou/BiliTamer` `main` @ `46505f7`（v1.9.9） |
 | 当前版本 | **v1.10.2** / versionCode **40** / 包名 `com.tamer.bili` |
-| 产物 | `apk/BiliTamer-v1.10.2.apk`（Release 附件同源） |
+| 提交 | `0e058f5`（v1.10.2 功能 + `memory/` 记忆目录）；功能提交 `125a8ce` |
+| Tag | `v1.10.2`（annotated，指向 `0e058f5`） |
+| Release | <https://github.com/FengFaQ/BiliTamer/releases/tag/v1.10.2>（附件 `BiliTamer-v1.10.2.apk`，180,918 B） |
+| 产物 | `apk/BiliTamer-v1.10.2.apk`（与 Release 附件同源；sha256 `5d5f3aee…9621fa`） |
 | 目标宿主 | 哔哩哔哩国际版 `com.bilibili.app.in` **6.7.1**（versionCode 9161100）校准；6.3.0–6.6.0 保留既有适配，但倍速两项只在 6.7.1 校准过 |
 | 构建方式 | WSL(Ubuntu 24.04) + JDK17 + `python3 tools/build_module.py`（无 Gradle/Android SDK） |
 | 单测 | `tools/speedpolicy_test.py`（39 格）、`tools/speedlistpolicy_test.py`（34 格）全绿 |
