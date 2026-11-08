@@ -13,6 +13,14 @@
 > Not affiliated with Bilibili Inc.; trademarks and copyrights belong to their owners.
 > For learning and research on Android hooking techniques only.
 
+> **本仓库 / This repository**：`FengFaQ/BiliTamer` 是 BiliTamer 的**独立维护线**
+> （基线：上游 `mengwuzhuanshou/BiliTamer` @ `46505f7`；之后独立演进，不再自动同步上游）。
+> 项目状态、交接手册、关键决策与锚点速查都在 [`memory/`](memory/README.md)——
+> **接手或回忆请先读 [`memory/PROJECT-STATE.md`](memory/PROJECT-STATE.md) 与
+> [`memory/HANDOVER.md`](memory/HANDOVER.md)**。
+> Individually maintained line of BiliTamer (baseline: upstream @46505f7); see
+> [`memory/`](memory/README.md) for the state snapshot, handover guide, decisions and anchors.
+
 面向**国际版哔哩哔哩** `com.bilibili.app.in`（实测适配 **6.3.0 / 6.4.0 / 6.5.0 / 6.6.0 / 6.7.1**）的 LSPosed 模块。
 An LSPosed module for the **international Bilibili app** (`com.bilibili.app.in`, tested against **6.3.0 / 6.4.0 / 6.5.0 / 6.6.0 / 6.7.1**).
 
@@ -157,6 +165,7 @@ process freezing). libxposed's `onPackageReady` delivers the right classLoader i
     │   ├── hooks/                      # 各功能 hook 组：身份/解码/首页布局/直播/听视频/互动提示/feed 清洗/弹幕浮层
     │   ├── accel/                      # 回环代理、多 CDN 分段下载、跨进程块缓存 / loopback proxy, range downloader, shared cache
     │   └── ui/                         # 纯代码设置界面、配置投递、分区词表编辑 / code-only settings, config delivery
+    ├── memory/                         # 项目记忆/交接/决策/锚点速查（本仓独立维护线）
     └── PITFALLS.md                     # 实现笔记与坑 / implementation notes & pitfalls
 
 ## 日志导出 / Exporting logs
